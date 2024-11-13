@@ -1,15 +1,23 @@
-import math, re, numpy as np
+import math
+import re
+import numpy as np
 from re import Pattern
 from pathlib import Path
-from typing import Type, List, get_type_hints
+
 from argparse import ArgumentParser
 from rich import pretty, traceback
 from rich.console import Console
 
+from typing import Type, List, Optional, get_type_hints
+
 traceback.install(show_locals=True)
-pretty.install()
+# pretty.install()
 
 console = Console()
+
+
+class MatchException(Exception):
+    pass
 
 
 def interpolate_circle(x, y, xe, ye, r, num_points=100):
@@ -98,42 +106,28 @@ def interpolate_arc(x0, y0, x1, y1, r, clockwise=True, segments=100):
     return gcode_lines
 
 
-def process_gcode(gcode: str):
-    lines = gcode.splitlines()
-    current_x, current_y = 0, 0
-
-    g1_lines = []
-
-    for line in lines:
-        line = line.lstrip()
-        parse_g_moves(line)
-        if line.startswith("G2") or line.startswith("G3"):
-            result = parse_gcode_line(line)
-            console.print(current_x, current_y, result)
-            if result:
-                x, y, r = result
-                # clockwise = line.startswith("G2")
-                g1_lines.extend(serialize_points(*interpolate_circle(current_x, current_y, x, y, r)))
-                # g1_lines.extend(interpolate_arc(current_x, current_y, x, y, r, clockwise))
-                current_x, current_y = x, y
-        elif line.startswith("G0") or line.startswith("G1"):
-            # Update current position for G1 moves
-            match = re.match(r"G[01] X([\w.-]+) Y([\w.-]+)", line)
-            if match:
-                current_x = float(match.group(1))
-                current_y = float(match.group(2))
-            g1_lines.append(line)
-        else:
-            # Copy other lines directly
-            g1_lines.append(line)
-
-    return g1_lines
-
-
 class Self:
 
     def __new__(cls, obj):
         return obj
+
+
+class PreviousValue:
+    last_value_container: list
+
+    def __init__(self):
+        self.last_value = 0.0
+
+    def update(self, value: float | None):
+        last_value = self.last_value
+        if value is not None:
+            self.last_value = value
+        return last_value
+
+
+start_x = PreviousValue()
+start_y = PreviousValue()
+start_z = PreviousValue()
 
 
 class ZeroDefault(float):
@@ -142,6 +136,31 @@ class ZeroDefault(float):
             return 0.0
         else:
             return float(obj)
+
+
+class PreviousDefault(float):
+    last_value_container = [0.0]
+
+    def __new__(cls, obj) -> float:
+        if obj is not None:
+            cls.last_value_container[0] = float(obj)
+        return cls.last_value_container[0]
+
+
+class PreviousX(PreviousDefault):
+    last_value_container = [0.0]
+
+
+class PreviousY(PreviousDefault):
+    last_value_container = [0.0]
+
+
+class PreviousZ(PreviousDefault):
+    last_value_container = [0.0]
+
+
+class PreviousF(PreviousDefault):
+    last_value_container = [0.0]
 
 
 class Code:
@@ -153,35 +172,39 @@ class Code:
         self.line = line
 
         reverse_class_list: List[Type[Code]] = list(reversed(type(self).mro()))
-        reverse_class_list = [cls for cls in reverse_class_list if issubclass(cls, Code) and cls != Code]
+        reverse_class_list = [
+            cls for cls in reverse_class_list if issubclass(cls, Code) and cls != Code]
 
         # console.print(reverse_class_list)
 
-        dict = {}
+        attributes = {}
+        type_hints = {}
         for cls in reverse_class_list:
             d = cls.match(line)
             if d is not None:
                 console.print(f"This matches {cls.__name__}", style="cyan2")
-                type_hints = get_type_hints(cls)
-                # console.print(type_hints)
-                d = {k: type_hints.get(k, Self)(v) for k, v in d.items()}
-                console.print(d)
-                dict.update(d)
+                type_hints.update(get_type_hints(cls))
+                attributes.update(d)
             else:
-                console.print(f"Not a {type(self).__name__}", style="bright_red")
-                raise ValueError("No match")
+                console.print(
+                    f"Not a {type(self).__name__}", style="bright_red")
+                raise MatchException("No match")
 
+        self.set_attributes(
+            self.finish_attributes_dict(attributes, type_hints)
+        )
+
+    def set_attributes(self, dict: dict):
         for key, value in dict.items():
             setattr(self, key, value)
 
-        console.print(f"Finished {type(self).__name__}", style="bright_green")
-
     @classmethod
     def match(cls: "Type[Code]", line) -> dict | None:
-        patterns = [cls.pattern] if not isinstance(cls.pattern, list) else cls.pattern
+        patterns = [cls.pattern] if not isinstance(
+            cls.pattern, list) else cls.pattern
         result = {}
         for pattern in patterns:
-            if match := pattern.match(line):
+            if match := pattern.search(line):
                 result.update(match.groupdict())
             else:
                 return None
@@ -191,11 +214,17 @@ class Code:
     def parse_line(cls, object):
         try:
             return cls(object)
-        except ValueError:
+        except MatchException:
             return None
 
     def process(self):
         return [self.line]
+
+    def finish_attributes_dict(self, attributes: dict, type_hints: dict):
+        attributes = {k: type_hints.get(k, Self)(v)
+                      for k, v in attributes.items()}
+        console.print(f"Finished {type(self).__name__}", style="bright_green")
+        return attributes
 
 
 class SpindleCommand(Code):
@@ -217,31 +246,54 @@ class StartCommand(SpindleCommand):
 
 class MoveCommand(Code):
 
-    pattern = re.compile(r"G(?P<G>\d) +(?:X(?P<X>[\d.-]+))? *(?:Y(?P<Y>[\d.-]+))? *(?:Z(?P<Z>[\d.-]+))?")
+    pattern = re.compile(
+        r"G(?P<G>\d) +(?:X(?P<X>[\d.-]+))? *(?:Y(?P<Y>[\d.-]+))? *(?:Z(?P<Z>[\d.-]+))? *(?:F(?P<F>[\d.-]+))?")
     G: int
-    X: ZeroDefault
-    Y: ZeroDefault
-    Z: ZeroDefault
+    X: PreviousX
+    Y: PreviousY
+    Z: PreviousZ
+    F: PreviousF
+    start_X: float
+    start_Y: float
+    start_Z: float
+
+    def finish_attributes_dict(self, attributes: dict, type_hints: dict):
+
+        attributes["start_X"] = start_x.update(attributes["X"])
+        attributes["start_Y"] = start_y.update(attributes["Y"])
+        attributes["start_Z"] = start_z.update(attributes["Z"])
+
+        return super().finish_attributes_dict(attributes, type_hints)
 
 
 class LinearMove(MoveCommand):
 
-    pattern = re.compile(r"G[12]")
+    pattern = re.compile(r"G[01]")
 
 
 class ArcMove(MoveCommand):
 
     pattern = [re.compile(r"G[23]"), re.compile(r"(?:R(?P<R>[\d.-]+))")]
-    R: int
+    R: float
 
     def process(self):
-        return [f"Changed {self.line}"]
+
+        # return [f"Previous : X{self.start_X}, Y{self.start_Y}, Z{self.start_Z}",
+        #         f"Current : X{self.X}, Y{self.Y}, Z{self.Z}", self.line, '----']
+
+        points = interpolate_circle(self.start_X, self.start_Y, self.X,
+                                    self.Y, self.R, num_points=100)
+        new_lines = serialize_points(*points)
+
+        return ["# new arc"] + new_lines + ["# end of new arc"]
 
 
 def get_code(line: str) -> Code | None:
-    code_lookups: List[Type[Code]] = [StopCommand, StartCommand, LinearMove, ArcMove]
+    code_lookups: List[Type[Code]] = [
+        StopCommand, StartCommand, LinearMove, ArcMove]
     console.print(f"Parsing line {line}", style="blue")
-    codes: List[Code] = [v for v in [code.parse_line(line) for code in code_lookups] if v is not None]
+    codes: List[Code] = [v for v in [code.parse_line(
+        line) for code in code_lookups] if v is not None]
     if len(codes) == 0:
         console.print("Not a code", style="bright_red")
         return None
@@ -257,9 +309,16 @@ def read_file_content(path):
     return content
 
 
+def write_file_content(path, content):
+    path = Path(path).resolve()
+    with open(path, "w") as f:
+        for line in content:
+            f.write(line)
+            f.write("\n")
+
+
 def parse_file_content(gcode: str):
     lines = gcode.splitlines()
-    current_x, current_y = 0, 0
 
     output = []
     for line in lines:
@@ -275,44 +334,22 @@ def parse_file_content(gcode: str):
     return output
 
 
-def parse_g_moves(line):
-
-    g_move_pattern = re.compile(r"G(?P<G>[0123]) *(?:X(?P<X>[\d.-]+))? *(?:Y(?P<Y>[\d.-]+))? *(?:R(?P<R>[\d.-]+))?")
-    match = g_move_pattern.match(line)
-    if match:
-        gcode = int(match["G"])
-        x = float(match["X"])
-        y = float(match["Y"])
-        r = float(match["R"])
-        console.print(gcode, x, y, r)
-
-
-def parse_gcode_line(line):
-    shit_pattern = re.compile(r"G(?P<G>[0123]) *(?:X(?P<x>[\d.-]+))? *(?:Y(?P<y>[\d.-]+))? *(?:R(?P<r>[\d.-]+))?")
-    match = shit_pattern.match(line)
-    if match:
-
-        Gcode = int(match["G"])
-        x = float(match["X"])
-        y = float(match["Y"])
-        r = float(match["R"])
-        return x, y, r
-    return None
-
-
 def run():
 
     console.print(ZeroDefault("0.15"))
     console.print(ZeroDefault(None))
 
     parser = ArgumentParser()
-    parser.add_argument("-f", "--file", help="path of the file to process", required=True)
+    parser.add_argument(
+        "-f", "--file", help="path of the file to process", required=True)
 
     args = parser.parse_args()
 
     path = args.file
     output = parse_file_content(read_file_content(path))
     console.print(output)
+
+    write_file_content("test_output.cnc", output)
 
 
 if __name__ == "__main__":
