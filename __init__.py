@@ -2,6 +2,14 @@ import math, re, numpy as np
 from re import Pattern
 from pathlib import Path
 from typing import Type, List, get_type_hints
+from argparse import ArgumentParser
+from rich import pretty, traceback
+from rich.console import Console
+
+traceback.install(show_locals=True)
+pretty.install()
+
+console = Console()
 
 
 def interpolate_circle(x, y, xe, ye, r, num_points=100):
@@ -59,7 +67,7 @@ def interpolate_arc(x0, y0, x1, y1, r, clockwise=True, segments=100):
 
     # if d > 2 * abs(r):
     #    raise ValueError("The radius is too short for the specified angle")
-    print("problem for ", x0, y0, x1, y1, r)
+    console.print("problem for ", x0, y0, x1, y1, r)
 
     h = math.sqrt(abs(r) ** 2 - (d / 2) ** 2)
     mx = (x0 + x1) / 2
@@ -93,6 +101,7 @@ def interpolate_arc(x0, y0, x1, y1, r, clockwise=True, segments=100):
 def process_gcode(gcode: str):
     lines = gcode.splitlines()
     current_x, current_y = 0, 0
+
     g1_lines = []
 
     for line in lines:
@@ -100,7 +109,7 @@ def process_gcode(gcode: str):
         parse_g_moves(line)
         if line.startswith("G2") or line.startswith("G3"):
             result = parse_gcode_line(line)
-            print(current_x, current_y, result)
+            console.print(current_x, current_y, result)
             if result:
                 x, y, r = result
                 # clockwise = line.startswith("G2")
@@ -137,31 +146,56 @@ class ZeroDefault(float):
 
 class Code:
 
-    pattern: Pattern
+    pattern: Pattern[str] | List[Pattern[str]]
+    line: str
 
     def __init__(self, line: str):
-        reverse_class_list: List[Type[Code]] = type(self).mro()[1:]
+        self.line = line
 
-        reverse_class_list = [cls for cls in reverse_class_list if isinstance(cls, Code)]
+        reverse_class_list: List[Type[Code]] = list(reversed(type(self).mro()))
+        reverse_class_list = [cls for cls in reverse_class_list if issubclass(cls, Code) and cls != Code]
+
+        # console.print(reverse_class_list)
 
         dict = {}
         for cls in reverse_class_list:
             d = cls.match(line)
             if d is not None:
+                console.print(f"This matches {cls.__name__}", style="cyan2")
                 type_hints = get_type_hints(cls)
-                d = {k: type_hints.get(v, Self) for k, v in d.items()}
+                # console.print(type_hints)
+                d = {k: type_hints.get(k, Self)(v) for k, v in d.items()}
+                console.print(d)
                 dict.update(d)
             else:
-                raise ValueError("")
+                console.print(f"Not a {type(self).__name__}", style="bright_red")
+                raise ValueError("No match")
 
         for key, value in dict.items():
             setattr(self, key, value)
 
+        console.print(f"Finished {type(self).__name__}", style="bright_green")
+
     @classmethod
     def match(cls: "Type[Code]", line) -> dict | None:
-        if match := cls.pattern.match(line):
-            return match.groupdict
-        return None
+        patterns = [cls.pattern] if not isinstance(cls.pattern, list) else cls.pattern
+        result = {}
+        for pattern in patterns:
+            if match := pattern.match(line):
+                result.update(match.groupdict())
+            else:
+                return None
+        return result
+
+    @classmethod
+    def parse_line(cls, object):
+        try:
+            return cls(object)
+        except ValueError:
+            return None
+
+    def process(self):
+        return [self.line]
 
 
 class SpindleCommand(Code):
@@ -170,18 +204,75 @@ class SpindleCommand(Code):
     M: int
 
 
-class MoveCommand:
+class StopCommand(SpindleCommand):
 
-    pattern = re.compile(r"G(?P<M>\d) *(?:X(?P<X>[\d.-]+))? *(?:Y(?P<X>[\d.-]+))?")
+    pattern = re.compile("M5")
+
+
+class StartCommand(SpindleCommand):
+
+    pattern = re.compile(r"M3 +(?P<P>\d+)")
+    P: int
+
+
+class MoveCommand(Code):
+
+    pattern = re.compile(r"G(?P<G>\d) +(?:X(?P<X>[\d.-]+))? *(?:Y(?P<Y>[\d.-]+))? *(?:Z(?P<Z>[\d.-]+))?")
     G: int
     X: ZeroDefault
     Y: ZeroDefault
+    Z: ZeroDefault
 
 
 class LinearMove(MoveCommand):
 
-    pattern = re.compile(r"G2.*(?:R(?P<R>[\d.-]+))?")
-    G: int
+    pattern = re.compile(r"G[12]")
+
+
+class ArcMove(MoveCommand):
+
+    pattern = [re.compile(r"G[23]"), re.compile(r"(?:R(?P<R>[\d.-]+))")]
+    R: int
+
+    def process(self):
+        return [f"Changed {self.line}"]
+
+
+def get_code(line: str) -> Code | None:
+    code_lookups: List[Type[Code]] = [StopCommand, StartCommand, LinearMove, ArcMove]
+    console.print(f"Parsing line {line}", style="blue")
+    codes: List[Code] = [v for v in [code.parse_line(line) for code in code_lookups] if v is not None]
+    if len(codes) == 0:
+        console.print("Not a code", style="bright_red")
+        return None
+    elif len(codes) > 1:
+        raise ValueError(f"Conflict : {codes=}")
+    return codes[0]
+
+
+def read_file_content(path):
+    path = Path(path).resolve()
+    with open(path, "r") as f:
+        content = f.read()
+    return content
+
+
+def parse_file_content(gcode: str):
+    lines = gcode.splitlines()
+    current_x, current_y = 0, 0
+
+    output = []
+    for line in lines:
+        line = line.lstrip()
+        code = get_code(line)
+        if code is None:
+            console.print("Code is None")
+            output.append(line)
+            continue
+        console.print("Code is NOT NONE", style="dark_orange3")
+        output.extend(code.process())
+
+    return output
 
 
 def parse_g_moves(line):
@@ -193,7 +284,7 @@ def parse_g_moves(line):
         x = float(match["X"])
         y = float(match["Y"])
         r = float(match["R"])
-        print(gcode, x, y, r)
+        console.print(gcode, x, y, r)
 
 
 def parse_gcode_line(line):
@@ -209,10 +300,25 @@ def parse_gcode_line(line):
     return None
 
 
+def run():
+
+    console.print(ZeroDefault("0.15"))
+    console.print(ZeroDefault(None))
+
+    parser = ArgumentParser()
+    parser.add_argument("-f", "--file", help="path of the file to process", required=True)
+
+    args = parser.parse_args()
+
+    path = args.file
+    output = parse_file_content(read_file_content(path))
+    console.print(output)
+
+
 if __name__ == "__main__":
     home = Path.home()
     path = home / "Desktop" / "luce_1.cnc"
     with open(path, "r") as f:
         content = f.read()
     shit = process_gcode(content)
-    print(shit)
+    console.print(shit)
