@@ -5,13 +5,15 @@ from re import Pattern
 from pathlib import Path
 
 from argparse import ArgumentParser
-from rich import pretty, traceback
-from rich.console import Console
+from rich import traceback
+from rich.console import Console, Group
+from rich.text import Text
+from rich.panel import Panel
 
-from typing import Type, List, Optional, get_type_hints
+
+from typing import Type, List, get_type_hints
 
 traceback.install(show_locals=True)
-# pretty.install()
 
 console = Console()
 
@@ -182,12 +184,12 @@ class Code:
         for cls in reverse_class_list:
             d = cls.match(line)
             if d is not None:
-                console.print(f"This matches {cls.__name__}", style="cyan2")
+                # console.print(f"This matches {cls.__name__}", style="cyan2")
                 type_hints.update(get_type_hints(cls))
                 attributes.update(d)
             else:
-                console.print(
-                    f"Not a {type(self).__name__}", style="bright_red")
+                # console.print(
+                #     f"Not a {type(self).__name__}", style="bright_red")
                 raise MatchException("No match")
 
         self.set_attributes(
@@ -200,6 +202,8 @@ class Code:
 
     @classmethod
     def match(cls: "Type[Code]", line) -> dict | None:
+        if not hasattr(cls, "pattern"):
+            return {}  # if it's a placeholder class, always match
         patterns = [cls.pattern] if not isinstance(
             cls.pattern, list) else cls.pattern
         result = {}
@@ -223,25 +227,48 @@ class Code:
     def finish_attributes_dict(self, attributes: dict, type_hints: dict):
         attributes = {k: type_hints.get(k, Self)(v)
                       for k, v in attributes.items()}
-        console.print(f"Finished {type(self).__name__}", style="bright_green")
+        # console.print(f"Finished {type(self).__name__}", style="bright_green")
         return attributes
 
 
+class UnitsCommand(Code):
+
+    pattern = re.compile("G(?:20)|(?:21)")
+
+
+class MetricCommand(UnitsCommand):
+    pattern = re.compile("G21")
+
+
+class ImperialCommand(UnitsCommand):
+    pattern = re.compile("G20")
+
+
 class SpindleCommand(Code):
-
-    pattern = re.compile(r"M(?P<M>\d)")
-    M: int
+    pass
 
 
-class StopCommand(SpindleCommand):
+class StopSpindleCommand(SpindleCommand):
 
     pattern = re.compile("M5")
 
 
-class StartCommand(SpindleCommand):
+class StartSpindleCommand(SpindleCommand):
 
-    pattern = re.compile(r"M3 +(?P<P>\d+)")
+    pattern = re.compile(r"M3 +P(?P<P>\d+)")
     P: int
+
+
+class MoveModeCommand(Code):
+    pass
+
+
+class AbsoluteCommand(MoveModeCommand):
+    pattern = re.compile("G90")
+
+
+class RelativeCommand(MoveModeCommand):
+    pattern = re.compile("G91")
 
 
 class MoveCommand(Code):
@@ -278,9 +305,6 @@ class ArcMove(MoveCommand):
 
     def process(self):
 
-        # return [f"Previous : X{self.start_X}, Y{self.start_Y}, Z{self.start_Z}",
-        #         f"Current : X{self.X}, Y{self.Y}, Z{self.Z}", self.line, '----']
-
         points = interpolate_circle(self.start_X, self.start_Y, self.X,
                                     self.Y, self.R, num_points=100)
         new_lines = serialize_points(*points)
@@ -288,56 +312,82 @@ class ArcMove(MoveCommand):
         return ["# new arc"] + new_lines + ["# end of new arc"]
 
 
-def get_code(line: str) -> Code | None:
-    code_lookups: List[Type[Code]] = [
-        StopCommand, StartCommand, LinearMove, ArcMove]
-    console.print(f"Parsing line {line}", style="blue")
-    codes: List[Code] = [v for v in [code.parse_line(
-        line) for code in code_lookups] if v is not None]
-    if len(codes) == 0:
-        console.print("Not a code", style="bright_red")
-        return None
-    elif len(codes) > 1:
-        raise ValueError(f"Conflict : {codes=}")
-    return codes[0]
+class GCODE:
+
+    available_commands: List[Type[Code]] = [
+        StartSpindleCommand,  # M3
+        StopSpindleCommand,  # M5
+        MetricCommand,  # G21
+        ImperialCommand,  # G20
+        AbsoluteCommand,  # G90
+        RelativeCommand,  # G91
+        LinearMove,  # G0 / G1
+        ArcMove  # G2 / G3
+    ]
+
+    def get_code(self, line: str) -> Code | None:
+        if line == "":
+            return None
+
+        code_lookups = self.available_commands
+        readout = []
+        codes: List[Code] = [v for v in [code.parse_line(
+            line) for code in code_lookups] if v is not None]
+        if len(codes) == 0:
+            readout.append(Text("Skipped code type", style="bright_red"))
+            color = "bright_red"
+            code = None
+        elif len(codes) > 1:
+            raise ValueError(f"Conflict : {codes=}")
+        else:
+            color = "blue"
+            code = codes[0]
+            readout.append(Text.assemble(("Identified as ", "cyan"),
+                                         (f"{code}", "bright_magenta")))
+
+        console.print(Panel(Group(*readout, fit=True), title=f"Parsing line {
+            line}", title_align="left", border_style=color))
+
+        return code
 
 
-def read_file_content(path):
-    path = Path(path).resolve()
-    with open(path, "r") as f:
-        content = f.read()
-    return content
+class File:
 
+    def __init__(self, path):
+        self.path = path
 
-def write_file_content(path, content):
-    path = Path(path).resolve()
-    with open(path, "w") as f:
-        for line in content:
-            f.write(line)
-            f.write("\n")
+    def read_content(self):
+        path = Path(self.path).resolve()
+        with open(path, "r") as f:
+            content = f.read()
+        return content
 
+    def write_content_to(self, path, content):
+        path = Path(path).resolve()
+        with open(path, "w") as f:
+            for line in content:
+                f.write(line)
+                f.write("\n")
 
-def parse_file_content(gcode: str):
-    lines = gcode.splitlines()
+    def parse_content(self, content: str):
+        lines = content.splitlines()
 
-    output = []
-    for line in lines:
-        line = line.lstrip()
-        code = get_code(line)
-        if code is None:
-            console.print("Code is None")
-            output.append(line)
-            continue
-        console.print("Code is NOT NONE", style="dark_orange3")
-        output.extend(code.process())
+        gcode = GCODE()
+        output = []
+        for line in lines:
+            line = line.lstrip()
+            code = gcode.get_code(line)
+            if code is None:
+                # console.print("Code is None")
+                output.append(line)
+                continue
+            # console.print("Code is NOT NONE", style="dark_orange3")
+            output.extend(code.process())
 
-    return output
+        return output
 
 
 def run():
-
-    console.print(ZeroDefault("0.15"))
-    console.print(ZeroDefault(None))
 
     parser = ArgumentParser()
     parser.add_argument(
@@ -346,16 +396,8 @@ def run():
     args = parser.parse_args()
 
     path = args.file
-    output = parse_file_content(read_file_content(path))
-    console.print(output)
+    file = File(path)
+    output = file.parse_content(file.read_content())
+    # console.print(output)
 
-    write_file_content("test_output.cnc", output)
-
-
-if __name__ == "__main__":
-    home = Path.home()
-    path = home / "Desktop" / "luce_1.cnc"
-    with open(path, "r") as f:
-        content = f.read()
-    shit = process_gcode(content)
-    console.print(shit)
+    file.write_content_to("test_output.cnc", output)
