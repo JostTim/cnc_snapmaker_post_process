@@ -96,7 +96,7 @@ class Command:
         elif isinstance(self, UnidentifiedCommand):
             identification = (
                 (" : ", ""),
-                ("Unidentified command type", "dark_orange3"))
+                ("⚠️  Unidentified command type", "dark_orange"))
         else:
             if not verbose:
                 return None
@@ -105,7 +105,7 @@ class Command:
                               (f"{self}", "bright_magenta"))
 
         return Text.assemble(
-            ("- Parsed line ", "blue"),
+            ("Parsed line ", "blue"),
             (f"{line_number} ", "yellow"),
             (f'"{self.line}"', "cyan"),
             *identification

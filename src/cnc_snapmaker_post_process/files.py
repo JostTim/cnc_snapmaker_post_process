@@ -28,7 +28,7 @@ class File:
             content = f.read()
         self.content = [line.lstrip() for line in content.splitlines()]
         self.console.print(Text().append(
-            "Read content of file ", style="blue").append(f"{path}", style="bright_magenta"))
+            "📄 Read content of file ", style="blue").append(f"{path}", style="light_salmon3"))
         return self
 
     def write_content(self):
@@ -38,7 +38,7 @@ class File:
                 f.write(line)
                 f.write("\n")
         self.console.print(Text().append(
-            "Wrote content to file ", style="blue").append(f"{path}", style="bright_magenta"))
+            "📝 Wrote content to file ", style="blue").append(f"{path}", style="light_salmon3"))
         return self
 
     def parse_commands(self):
@@ -50,9 +50,16 @@ class File:
             commands.append(command)
         self.console.print(
             Panel(Group(*[render for render in renders if render is not None]),
-                  title="Parsing",
+                  title=(Text()
+                         .append("Parsing file ")
+                         .append(f"{self.path}", style="light_salmon3")
+                         .append(" with ")
+                         .append(f"{self.gcode_class.__name__}", style="dark_cyan")
+                         .append(" command set")
+                         ),
                   border_style='blue',
-                  title_align='left'))
+                  title_align='left',
+                  ))
         self.commands = commands
         return self
 

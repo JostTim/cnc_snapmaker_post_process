@@ -1,6 +1,6 @@
 import numpy as np
 from pathlib import Path
-
+from rich.text import Text
 
 from . gcode import ArcMove, LinearMove, Command
 from . files import File
@@ -42,6 +42,11 @@ class TransformationRuleSet:
         for command in self.commands:
             commands.extend(self.transform_command(command))
         self.commands = commands
+        self.file.console.print(Text(style="blue")
+                                .append("🔄 Transformed commands of file ")
+                                .append(f"{self.file.path}", style="light_salmon3")
+                                .append(" succesfully")
+                                )
         return self
 
     def generate_output(self) -> List[str]:
