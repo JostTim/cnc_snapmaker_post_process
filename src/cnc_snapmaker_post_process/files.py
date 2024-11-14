@@ -1,16 +1,24 @@
-from rich.console import Console
+from rich.console import Console, Group
+from rich.panel import Panel
+from rich.text import Text
 from pathlib import Path
+
 
 from .gcode import Command, Gcode, SnapmakerGcode
 
-from typing import List
+from typing import List, Type, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .transformations import TransformationRuleSet
 
 
 class File:
 
     gcode_class = Gcode
+    content: List[str]
+    commands: List[Command]
 
-    def __init__(self, path):
+    def __init__(self, path: str | Path):
         self.path = path
         self.console = Console()
 
@@ -18,27 +26,38 @@ class File:
         path = Path(self.path).resolve()
         with open(path, "r") as f:
             content = f.read()
-        return content
+        self.content = [line.lstrip() for line in content.splitlines()]
+        self.console.print(Text().append(
+            "Read content of file ", style="blue").append(f"{path}", style="bright_magenta"))
+        return self
 
-    def write_content_to(self, path, content: List[str]):
-        path = Path(path).resolve()
+    def write_content(self):
+        path = Path(self.path).resolve()
         with open(path, "w") as f:
-            for line in content:
+            for line in self.content:
                 f.write(line)
                 f.write("\n")
+        self.console.print(Text().append(
+            "Wrote content to file ", style="blue").append(f"{path}", style="bright_magenta"))
+        return self
 
-    def parse_commands(self, content: str) -> List[Command]:
-        lines = content.splitlines()
-
+    def parse_commands(self):
         gcode = self.gcode_class()
-        commands = []
-        for line in lines:
-            line = line.lstrip()
+        commands, renders = [], []
+        for line_number, line in enumerate(self.content):
             command = gcode.get_code(line)
-            self.console.print(command.rich_render())
+            renders.append(command.rich_render(line_number + 1))
             commands.append(command)
+        self.console.print(
+            Panel(Group(*[render for render in renders if render is not None]),
+                  title="Parsing",
+                  border_style='blue',
+                  title_align='left'))
+        self.commands = commands
+        return self
 
-        return commands
+    def to_tranformer(self, transformer_class: Type["TransformationRuleSet"]) -> "TransformationRuleSet":
+        return transformer_class(self)
 
 
 class SnapmakerFile(File):

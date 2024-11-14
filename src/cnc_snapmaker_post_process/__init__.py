@@ -1,10 +1,11 @@
 from argparse import ArgumentParser
-from typing import Type
+from pathlib import Path
 
 from . import files, transformations
 from . files import File
 from . transformations import TransformationRuleSet
 
+from typing import Type
 # from rich import traceback
 # traceback.install(show_locals=True)
 
@@ -19,15 +20,23 @@ def run():
 
     args = parser.parse_args()
 
-    path: str = args.file
+    path = Path(args.file).resolve()
     machine_name = str(args.machine).capitalize()
 
     machine_file_class: Type[File] = getattr(files, machine_name + "File")
     transformation_class: Type[TransformationRuleSet] = getattr(
         transformations, machine_name + "Transformation")
 
-    file = machine_file_class(path)
-    commands = file.parse_commands(file.read_content())
-    output_lines = transformation_class(commands).render()
+    root, filename, extension = path.parent, Path(path).stem, Path(path).suffix
 
-    file.write_content_to("test_output.cnc", output_lines)
+    output_path = root / f"{filename}-transformed{extension}"
+
+    file = machine_file_class(path)
+    file = (file.
+            read_content().
+            parse_commands().
+            to_tranformer(transformation_class).
+            transform().
+            to_file(output_path).
+            write_content()
+            )

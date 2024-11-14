@@ -25,19 +25,14 @@ class Command:
         reverse_class_list = [
             cls for cls in reverse_class_list if issubclass(cls, Command) and cls != Command]
 
-        # console.print(reverse_class_list)
-
         attributes = {}
         type_hints = {}
         for cls in reverse_class_list:
             d = cls.match(line)
             if d is not None:
-                # console.print(f"This matches {cls.__name__}", style="cyan2")
                 type_hints.update(get_type_hints(cls))
                 attributes.update(d)
             else:
-                # console.print(
-                #     f"Not a {type(self).__name__}", style="bright_red")
                 raise MatchException("No match")
 
         self.set_attributes(
@@ -69,45 +64,49 @@ class Command:
         except MatchException:
             return None
 
-    def process(self):
-        return [self.line]
+    def generate_line(self) -> str:
+        return self.line
 
     def finish_attributes_dict(self, attributes: dict, type_hints: dict):
         attributes = {k: type_hints.get(k, SelfReturn)(v)
                       for k, v in attributes.items()}
-        # console.print(f"Finished {type(self).__name__}", style="bright_green")
         return attributes
 
     @ classmethod
-    def manual_instanciation(cls, dict_attributes):
+    def manual_instanciation(cls, **dict_attributes):
 
         obj = cls("")
         obj.set_attributes(dict_attributes)
         return obj
 
     def __str__(self):
-        values = [f"{key}:{value}" for key,
+        values = [f"{key}={value}" for key,
                   value in self.__dict__.items() if key != "line"]
         return f"<{type(self).__name__}> " + ", ".join(values)
 
     def __repr__(self):
         return str(self)
 
-    def rich_render(self):
+    def rich_render(self, line_number: int, verbose=False):
 
         if self.line == "":
-            identification = ((" - ", ""), ("Empty line", "gray3"))
+            if not verbose:
+                return None
+            identification = ((" : ", ""), ("Empty line", "gray3"))
         elif isinstance(self, UnidentifiedCommand):
             identification = (
-                (" - ", ""),
+                (" : ", ""),
                 ("Unidentified command type", "dark_orange3"))
         else:
+            if not verbose:
+                return None
             identification = (("\n\t", ""),
                               ("Identified as ", "blue"),
                               (f"{self}", "bright_magenta"))
 
         return Text.assemble(
             ("- Parsed line ", "blue"),
+            (f"{line_number} ", "yellow"),
             (f'"{self.line}"', "cyan"),
             *identification
         )
@@ -190,19 +189,15 @@ class LinearMove(MoveCommand):
 
     pattern = compile(r"G[01]")
 
+    def generate_line(self):
+        F = f" F{self.F:.0f}" if self.G == 1 else ""
+        return f"G{self.G} X{self.X:.2f} Y{self.Y:.2f} Z{self.Z:.2f}{F}"
+
 
 class ArcMove(MoveCommand):
 
     pattern = [compile(r"G[23]"), compile(r"(?:R(?P<R>[\d.-]+))")]
     R: float
-
-    # def process(self):
-
-    #     points = interpolate_circle(self.start_X, self.start_Y, self.X,
-    #                                 self.Y, self.R, num_points=100)
-    #     new_lines = serialize_points(*points)
-
-    #     return ["# new arc"] + new_lines + ["# end of new arc"]
 
 
 class Gcode:
