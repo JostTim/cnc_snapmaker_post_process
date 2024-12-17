@@ -1,9 +1,11 @@
 import numpy as np
 from pathlib import Path
 from rich.text import Text
+from rich.panel import Panel
 
-from . gcode import ArcMove, LinearMove, Command
-from . files import File
+from .gcode import ArcMove, LinearMove, Command
+from .files import File
+from .stats import FileStatistics
 
 from typing import List, Type, Optional
 
@@ -29,12 +31,16 @@ class TransformationRuleSet:
     def __init__(self, file: File):
         self.commands = file.commands
         self.file = file
+        self.statistics = FileStatistics(file)
 
     def transform_command(self, command: "Command") -> List[Command]:
         for rule in self.rules:
             rule = rule(command)
             if rule.match():
-                return rule.transform()
+                commands = rule.transform()
+                self.statistics.record(command, commands)
+                return commands
+        self.statistics.record(command, None)
         return [command]
 
     def transform(self):
@@ -42,26 +48,25 @@ class TransformationRuleSet:
         for command in self.commands:
             commands.extend(self.transform_command(command))
         self.commands = commands
-        self.file.console.print(Text(style="blue")
-                                .append("🔄 Transformed commands of file ")
-                                .append(f"{self.file.path}", style="light_salmon3")
-                                .append(" succesfully")
-                                )
+        self.file.console.print(
+            Panel(
+                Text(style="blue")
+                .append("🔄 Transformed commands of file ")
+                .append(f"{self.file.path}", style="light_salmon3")
+                .append(" succesfully"),
+                title="Transforming",
+                border_style="blue bold",
+                title_align="left",
+                highlight=True,
+            )
+        )
+        self.statistics.print_report()
         return self
-
-    def generate_output(self) -> List[str]:
-        output: List[str] = []
-        for command in self.commands:
-            output.append(command.generate_line())
-        return output
 
     def to_file(self, path: str | Path, file_class: Optional[Type[File]] = None):
         if file_class is None:
             file_class = type(self.file)
-        file = file_class(path)
-        file.commands = self.commands
-        file.content = self.generate_output()
-        return file
+        return file_class.from_commands(path, self.commands)
 
 
 class ArcRule(Rule):
@@ -72,22 +77,23 @@ class ArcRule(Rule):
         return True if isinstance(self.command, ArcMove) else False
 
     def transform(self):
-        return self.interpolate_circle(self.command.start_X,
-                                       self.command.start_Y,
-                                       self.command.X,
-                                       self.command.Y,
-                                       self.command.R,
-                                       self.command.F,
-                                       self.command.Z,
-                                       num_points=100)
+        return self.interpolate_circle(
+            self.command.start_X,
+            self.command.start_Y,
+            self.command.X,
+            self.command.Y,
+            self.command.R,
+            self.command.F,
+            self.command.Z,
+            num_points=100,
+        )
 
     def interpolate_circle(self, x, y, xe, ye, r, f, z, num_points=100):
         # Calculate the center of the circle
         dx, dy = xe - x, ye - y
         q = np.sqrt(dx**2 + dy**2)
         if q > 2 * r:
-            raise ValueError(
-                "The points are too far apart for the given radius.")
+            raise ValueError("The points are too far apart for the given radius.")
 
         # Calculate the midpoint
         mx, my = (x + xe) / 2, (y + ye) / 2
@@ -130,15 +136,9 @@ class ArcRule(Rule):
         for start_x, start_y, end_x, end_y in zip(starts_x, starts_y, ends_x, ends_y):
 
             commands.append(
-                LinearMove.manual_instanciation(G=1,
-                                                X=end_x,
-                                                Y=end_y,
-                                                Z=z,
-                                                start_X=start_x,
-                                                start_Y=start_y,
-                                                start_Z=z,
-                                                F=f
-                                                )
+                LinearMove.manual_instanciation(
+                    G=1, X=end_x, Y=end_y, Z=z, start_X=start_x, start_Y=start_y, start_Z=z, F=f
+                )
             )
 
         return commands
@@ -147,6 +147,7 @@ class ArcRule(Rule):
 class SnapmakerTransformation(TransformationRuleSet):
 
     rules = [ArcRule]
+
 
 # Test it ?
 

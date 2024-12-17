@@ -1,7 +1,5 @@
 from rich.console import Group
 from rich.text import Text
-from re import Pattern, compile
-
 from .exceptions import MatchException
 from .memories import (
     SelfReturn,
@@ -13,8 +11,9 @@ from .memories import (
     PreviousYStorer,
     PreviousZStorer,
 )
+from .patterning import Balise, Pattern, compile
 
-from typing import List, Type, get_type_hints
+from typing import List, Type, get_type_hints, Dict, Any
 
 from math import inf
 
@@ -24,11 +23,17 @@ class Command:
     pattern: Pattern[str] | List[Pattern[str]]
     line: str
     priority = 0
+    do_match = True
+    contains_a_balise = False
 
     def __init__(self, line: str):
         self.line = line
+        if self.do_match:
+            self._instanciate_self()
 
-        if line == "":
+    def _instanciate_self(self):
+
+        if self.line == "":
             return
 
         reverse_class_list: List[Type[Command]] = list(reversed(type(self).mro()))
@@ -37,7 +42,7 @@ class Command:
         attributes = {}
         type_hints = {}
         for cls in reverse_class_list:
-            d = cls.match(line)
+            d = cls.match(self.line)
             if d is not None:
                 type_hints.update(get_type_hints(cls))
                 attributes.update(d)
@@ -51,7 +56,7 @@ class Command:
             setattr(self, key, value)
 
     @classmethod
-    def match(cls: "Type[Command]", line) -> dict | None:
+    def match(cls: "Type[Command]", line) -> Dict[str, str] | None:
         if not hasattr(cls, "pattern"):
             return {}  # if it's a placeholder class, always match
         patterns = [cls.pattern] if not isinstance(cls.pattern, list) else cls.pattern
@@ -73,9 +78,21 @@ class Command:
     def generate_line(self) -> str:
         return self.line
 
-    def finish_attributes_dict(self, attributes: dict, type_hints: dict):
-        attributes = {k: type_hints.get(k, SelfReturn)(v) for k, v in attributes.items()}
-        return attributes
+    def finish_attributes_dict(self, attributes: Dict[str, str], type_hints: Dict[str, Type]) -> Dict[str, Any]:
+        return {k: self.instanciate_attribute(v, type_hints.get(k)) for k, v in attributes.items()}
+
+    def instanciate_attribute(self, attribute_value_string: str | None, attribute_hint: Type | None):
+        if not isinstance(attribute_value_string, str):
+            return attribute_value_string
+
+        if attribute_value_string.startswith("{") and attribute_value_string.endswith("}"):
+            self.contains_a_balise = True
+            return Balise
+
+        if attribute_hint is None:
+            return attribute_value_string
+
+        return attribute_hint(attribute_value_string)
 
     @classmethod
     def manual_instanciation(cls, **dict_attributes):
@@ -105,30 +122,27 @@ class Command:
             identification = (("\n\t", ""), ("Identified as ", "blue"), (f"{self}", "bright_magenta"))
 
         return Text.assemble(
-            ("Parsed line ", "blue"), (f"{line_number} ", "yellow"), (f'"{self.line}"', "cyan"), *identification
+            ("🔬 Parsed line ", "blue"), (f"{line_number} ", "yellow"), (f'"{self.line}"', "cyan"), *identification
         )
 
 
 class UnidentifiedCommand(Command):
-    def __init__(self, line):
-        self.line = line
+    do_match = False
 
 
 class EmptyCommand(Command):
+    do_match = False
+
     def __init__(self):
-        self.line = ""
+        super().__init__("")
 
 
 class CommentLine(Command):
     pattern = compile(r"^#.*$")
     priority = inf
 
-    def __init__(self, line):
-        self.line = line
-
 
 class UnitsCommand(Command):
-
     pattern = compile("G(?:20)|(?:21)")
 
 
@@ -141,7 +155,7 @@ class ImperialCommand(UnitsCommand):
 
 
 class SpindleCommand(Command):
-    pass
+    """Just a base class for all spindle related commands"""
 
 
 class StopSpindleCommand(SpindleCommand):
@@ -156,7 +170,7 @@ class StartSpindleCommand(SpindleCommand):
 
 
 class MoveModeCommand(Command):
-    pass
+    """Just a base class for all move related commands"""
 
 
 class AbsoluteCommand(MoveModeCommand):
@@ -240,5 +254,5 @@ class SnapmakerGcode(Gcode):
         RelativeCommand,  # G91
         LinearMove,  # G0 / G1
         ArcMove,  # G2 / G3
-        # CommentLine,
+        CommentLine,
     ]

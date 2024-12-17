@@ -16,7 +16,7 @@ build-backend = "pdm.backend"
 
 [tool.pdm.scripts]
 snaprocess = { call = "cnc_snapmaker_post_process:run" }
-
+snapinject = { call = "cnc_snapmaker_post_process:inject" }
 
 [tool.pdm]
 distribution = true
