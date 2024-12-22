@@ -133,10 +133,14 @@ class UnitsCommand(Command):
 
 
 class MetricCommand(UnitsCommand):
+    """https://marlinfw.org/docs/gcode/G021.html"""
+
     pattern = compile("G21")
 
 
 class ImperialCommand(UnitsCommand):
+    """https://marlinfw.org/docs/gcode/G020.html"""
+
     pattern = compile("G20")
 
 
@@ -160,10 +164,14 @@ class MoveModeCommand(Command):
 
 
 class AbsoluteCommand(MoveModeCommand):
+    """https://marlinfw.org/docs/gcode/G090.html"""
+
     pattern = compile("G90")
 
 
 class RelativeCommand(MoveModeCommand):
+    """https://marlinfw.org/docs/gcode/G091.html"""
+
     pattern = compile("G91")
 
 
@@ -191,6 +199,7 @@ class MoveCommand(Command):
 
 
 class LinearMove(MoveCommand):
+    """https://marlinfw.org/docs/gcode/G000-G001.html"""
 
     pattern = compile(r"G[01]")
 
@@ -200,6 +209,7 @@ class LinearMove(MoveCommand):
 
 
 class ArcMove(MoveCommand):
+    """https://marlinfw.org/docs/gcode/G002-G003.html"""
 
     pattern = [compile(r"G[23]"), compile(r"(?:R(?P<R>[\d.-]+))")]
     R: float
@@ -230,6 +240,7 @@ class Gcode:
 
 
 class SnapmakerGcode(Gcode):
+    """https://wiki.snapmaker.com/en/Snapmaker_Luban/manual/2_supported_gcode_references"""
 
     command_set = [
         StartSpindleCommand,  # M3
